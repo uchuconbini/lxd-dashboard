@@ -1,0 +1,21 @@
+# Database files
+*.sqlite
+*.sqlite3
+*.db
+
+# LXD certificates (stored outside project at /var/lxdware/data/)
+*.crt
+*.key
+*.pem
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# PHP error logs
+*.log
+error_log
