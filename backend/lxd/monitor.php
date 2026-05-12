@@ -200,6 +200,154 @@ if (isset($_SESSION['username'])) {
       echo json_encode(['data' => $rows, 'bucket' => $bucket, 'range' => $range]);
       break;
 
+    case "saveInstanceHistory":
+      $instances_json = isset($_POST['instances']) ? $_POST['instances'] : '[]';
+      $instances_data = json_decode($instances_json, true);
+      if (!is_array($instances_data) || empty($instances_data)) {
+        echo json_encode(['status' => 'ok']);
+        break;
+      }
+
+      $db = establishDatabaseConnection();
+
+      if ($_SESSION['db_type'] == "SQLite") {
+        $db->exec('CREATE TABLE IF NOT EXISTS lxd_instance_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          remote_id INTEGER,
+          recorded_at INTEGER,
+          instance_name TEXT,
+          cpu_pct REAL,
+          mem_used REAL
+        )');
+      } else {
+        $db->exec('CREATE TABLE IF NOT EXISTS lxd_instance_history (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          remote_id INT,
+          recorded_at INT,
+          instance_name VARCHAR(255),
+          cpu_pct FLOAT,
+          mem_used DOUBLE
+        )');
+      }
+
+      $now  = time();
+      $stmt = $db->prepare('INSERT INTO lxd_instance_history
+        (remote_id, recorded_at, instance_name, cpu_pct, mem_used)
+        VALUES (?, ?, ?, ?, ?)');
+
+      foreach ($instances_data as $inst) {
+        if (empty($inst['name'])) continue;
+        $stmt->execute([
+          (int)$remote,
+          $now,
+          substr($inst['name'], 0, 255),
+          isset($inst['cpu_pct'])  ? (float)$inst['cpu_pct']  : 0,
+          isset($inst['mem_used']) ? (float)$inst['mem_used'] : 0,
+        ]);
+      }
+
+      if (rand(1, 50) === 1) {
+        $cutoff = $now - 604800;
+        $db->prepare('DELETE FROM lxd_instance_history WHERE remote_id = ? AND recorded_at < ?')
+           ->execute([(int)$remote, $cutoff]);
+      }
+
+      $db = null;
+      echo json_encode(['status' => 'ok']);
+      break;
+
+    case "loadInstanceHistory":
+      $range = isset($_GET['range']) ? (int)$_GET['range'] : 3600;
+
+      if      ($range <= 3600)   $bucket = 30;
+      elseif  ($range <= 21600)  $bucket = 120;
+      elseif  ($range <= 86400)  $bucket = 300;
+      else                       $bucket = 1800;
+
+      $since = time() - $range;
+
+      $db = establishDatabaseConnection();
+
+      if ($_SESSION['db_type'] == "SQLite") {
+        $db->exec('CREATE TABLE IF NOT EXISTS lxd_instance_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          remote_id INTEGER,
+          recorded_at INTEGER,
+          instance_name TEXT,
+          cpu_pct REAL,
+          mem_used REAL
+        )');
+      } else {
+        $db->exec('CREATE TABLE IF NOT EXISTS lxd_instance_history (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          remote_id INT,
+          recorded_at INT,
+          instance_name VARCHAR(255),
+          cpu_pct FLOAT,
+          mem_used DOUBLE
+        )');
+      }
+
+      $stmt = $db->prepare('
+        SELECT
+          (recorded_at / :bucket) * :bucket AS ts,
+          instance_name,
+          ROUND(AVG(cpu_pct),  2) AS cpu_pct,
+          AVG(mem_used)            AS mem_used
+        FROM lxd_instance_history
+        WHERE remote_id = :remote AND recorded_at >= :since
+        GROUP BY (recorded_at / :bucket), instance_name
+        ORDER BY ts ASC
+      ');
+      $stmt->execute([':bucket' => $bucket, ':remote' => (int)$remote, ':since' => $since]);
+      $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+      $db = null;
+
+      // Pivot rows into { labels_ts, by_instance: { name: {cpu:[],mem:[]} } }
+      $labels_ts  = [];
+      $by_instance = [];
+
+      foreach ($rows as $row) {
+        $ts   = (int)$row['ts'];
+        $name = $row['instance_name'];
+        if (!in_array($ts, $labels_ts, true)) $labels_ts[] = $ts;
+        if (!isset($by_instance[$name]))       $by_instance[$name] = [];
+        $by_instance[$name][$ts] = [(float)$row['cpu_pct'], (float)$row['mem_used']];
+      }
+
+      sort($labels_ts);
+
+      // Sort instances by average CPU desc, keep top 15
+      $avg_cpu = [];
+      foreach ($by_instance as $name => $tdata) {
+        $cpus = array_column(array_values($tdata), 0);
+        $avg_cpu[$name] = count($cpus) ? array_sum($cpus) / count($cpus) : 0;
+      }
+      arsort($avg_cpu);
+      $top_names = array_slice(array_keys($avg_cpu), 0, 15);
+
+      // Build aligned arrays (null for missing buckets so Chart.js spans gaps)
+      $result = [];
+      foreach ($top_names as $name) {
+        $tdata   = $by_instance[$name];
+        $cpu_arr = [];
+        $mem_arr = [];
+        foreach ($labels_ts as $ts) {
+          if (isset($tdata[$ts])) {
+            $cpu_arr[] = $tdata[$ts][0];
+            $mem_arr[] = $tdata[$ts][1];
+          } else {
+            $cpu_arr[] = null;
+            $mem_arr[] = null;
+          }
+        }
+        $result[$name] = ['cpu' => $cpu_arr, 'mem' => $mem_arr];
+      }
+
+      echo json_encode(['labels_ts' => $labels_ts, 'by_instance' => $result, 'range' => $range]);
+      break;
+
   }
 
 } else {

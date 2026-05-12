@@ -408,6 +408,45 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 </div>
               </div><!-- /history row -->
 
+              <!-- Per-Instance History Section -->
+              <div class="row">
+                <div class="col-12 mb-4">
+                  <div class="card shadow">
+                    <div class="card-header py-3 d-flex flex-row align-items-center justify-content-between">
+                      <h6 class="m-0 font-weight-bold text-primary">Per-Instance Resource History</h6>
+                      <span class="text-xs text-gray-500">Range follows host history selector &bull; top 15 by avg CPU &bull; up to 7 days</span>
+                    </div>
+                    <div class="card-body">
+
+                      <div id="instanceHistoryEmptyMsg" class="text-center text-muted py-4">
+                        No per-instance history yet. Data is recorded every 5 s while this page is open.
+                      </div>
+
+                      <div id="instanceHistoryCharts">
+                        <!-- CPU per instance -->
+                        <div class="mb-1">
+                          <div class="text-xs font-weight-bold text-primary text-uppercase mb-2">CPU % per Instance</div>
+                          <div style="position:relative;height:220px;">
+                            <canvas id="instCpuChart"></canvas>
+                          </div>
+                        </div>
+
+                        <hr class="my-3">
+
+                        <!-- Memory per instance -->
+                        <div>
+                          <div class="text-xs font-weight-bold text-primary text-uppercase mb-2">Memory Used per Instance</div>
+                          <div style="position:relative;height:220px;">
+                            <canvas id="instMemChart"></canvas>
+                          </div>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                </div>
+              </div><!-- /per-instance history row -->
+
             </div>
           </div>
 
@@ -481,6 +520,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
   var histNetChart  = null;
   var currentRange  = 3600;
   var histTimer     = null;
+
+  var instCpuChart  = null;
+  var instMemChart  = null;
+
+  var INST_COLORS = [
+    '#4e73df','#1cc88a','#36b9cc','#f6c23e','#e74a3b',
+    '#6f42c1','#fd7e14','#20c9a6','#858796','#e83e8c',
+    '#17a2b8','#28a745','#6c757d','#ffc107','#dc3545'
+  ];
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -584,6 +632,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         histNetChart.update();
       }
     );
+
+    loadInstanceHistoryCharts(range);
   }
 
   function scheduleHistoryRefresh() {
@@ -592,6 +642,78 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
       loadHistoryCharts(currentRange);
       scheduleHistoryRefresh();
     }, 60000); // refresh history every 60 s
+  }
+
+  // ── Per-instance history ──────────────────────────────────────────────────
+
+  function saveInstanceHistorySnapshot(instances, cpuMap) {
+    var data = [];
+    instances.forEach(function(inst) {
+      if (inst.status === 'Running') {
+        data.push({
+          name:     inst.name,
+          cpu_pct:  cpuMap[inst.name] !== undefined ? cpuMap[inst.name] : 0,
+          mem_used: inst.memUsage || 0
+        });
+      }
+    });
+    if (!data.length) return;
+    $.post(
+      "./backend/lxd/monitor.php?remote=" + encodeURI(remoteId) +
+      "&project=" + encodeURI(projectName) + "&action=saveInstanceHistory",
+      { instances: JSON.stringify(data) }
+    );
+  }
+
+  function loadInstanceHistoryCharts(range) {
+    $.get(
+      "./backend/lxd/monitor.php?remote=" + encodeURI(remoteId) +
+      "&project=" + encodeURI(projectName) + "&action=loadInstanceHistory&range=" + range,
+      function(raw) {
+        var result;
+        try { result = JSON.parse(raw); } catch(e) { return; }
+
+        var labels_ts  = result.labels_ts  || [];
+        var byInstance = result.by_instance || {};
+        var names      = Object.keys(byInstance);
+
+        if (!names.length || !labels_ts.length) {
+          $('#instanceHistoryEmptyMsg').show();
+          instCpuChart.data.labels = []; instCpuChart.data.datasets = []; instCpuChart.update();
+          instMemChart.data.labels = []; instMemChart.data.datasets = []; instMemChart.update();
+          return;
+        }
+
+        $('#instanceHistoryEmptyMsg').hide();
+
+        var labels = labels_ts.map(function(ts) {
+          var d = new Date(parseInt(ts) * 1000);
+          if (range <= 86400)
+            return pad(d.getHours()) + ':' + pad(d.getMinutes());
+          return (d.getMonth()+1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':00';
+        });
+
+        var cpuDatasets = [];
+        var memDatasets = [];
+
+        names.forEach(function(name, i) {
+          var color = INST_COLORS[i % INST_COLORS.length];
+          var base  = { label: name, borderColor: color, backgroundColor: 'transparent',
+                        borderWidth: 1.5, tension: 0.3, spanGaps: true,
+                        pointRadius: 0, pointHoverRadius: 3 };
+          cpuDatasets.push($.extend({}, base, { data: byInstance[name].cpu }));
+          memDatasets.push($.extend({}, base, { data: byInstance[name].mem }));
+        });
+
+        instCpuChart.data.labels   = labels;
+        instCpuChart.data.datasets = cpuDatasets;
+        instCpuChart.update();
+
+        instMemChart.data.labels   = labels;
+        instMemChart.data.datasets = memDatasets;
+        instMemChart.update();
+      }
+    );
   }
 
   // ── Chart initialisation ─────────────────────────────────────────────────
@@ -789,6 +911,45 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         animation: { duration: 300 }
       }
     });
+
+    // ── Per-instance history charts ───────────────────────────────────────
+    var instSharedOpts = {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { color: 'rgba(0,0,0,0.04)' }, ticks: { maxTicksLimit: 10, maxRotation: 0 } },
+        y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.04)' } }
+      },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8, font: { size: 11 } } }
+      },
+      animation: { duration: 200 },
+      elements: { point: { radius: 0, hoverRadius: 3 } }
+    };
+
+    instCpuChart = new Chart(document.getElementById('instCpuChart').getContext('2d'), {
+      type: 'line',
+      data: { labels: [], datasets: [] },
+      options: $.extend(true, {}, instSharedOpts, {
+        scales: { y: { min: 0, max: 100, ticks: { callback: function(v) { return v + '%'; }, stepSize: 25 } } },
+        plugins: {
+          legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8, font: { size: 11 } } },
+          tooltip: { callbacks: { label: function(c) { return ' ' + c.dataset.label + ': ' + (c.parsed.y !== null ? c.parsed.y.toFixed(2) + '%' : '—'); } } }
+        }
+      })
+    });
+
+    instMemChart = new Chart(document.getElementById('instMemChart').getContext('2d'), {
+      type: 'line',
+      data: { labels: [], datasets: [] },
+      options: $.extend(true, {}, instSharedOpts, {
+        scales: { y: { ticks: { callback: function(v) { return formatBytes(v); } } } },
+        plugins: {
+          legend: { position: 'bottom', labels: { boxWidth: 10, padding: 8, font: { size: 11 } } },
+          tooltip: { callbacks: { label: function(c) { return ' ' + c.dataset.label + ': ' + (c.parsed.y !== null ? formatBytes(c.parsed.y) : '—'); } } }
+        }
+      })
+    });
   }
 
   // ── Table rendering ───────────────────────────────────────────────────────
@@ -940,6 +1101,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
             // Persist snapshot to database for long-term history
             saveHistorySnapshot(hostCpuPct, stats.memUsed, stats.memTotal, rxBps, txBps);
+            saveInstanceHistorySnapshot(stats.instances, cpuMap);
           }
         }
 
