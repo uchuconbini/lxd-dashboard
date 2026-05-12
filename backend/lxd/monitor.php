@@ -92,6 +92,114 @@ if (isset($_SESSION['username'])) {
       echo json_encode($arr);
       break;
 
+    case "saveHistory":
+      // POST: persist one computed snapshot row
+      $cpu_pct    = isset($_POST['cpu_pct'])    ? (float)$_POST['cpu_pct']    : 0;
+      $mem_used   = isset($_POST['mem_used'])   ? (float)$_POST['mem_used']   : 0;
+      $mem_total  = isset($_POST['mem_total'])  ? (float)$_POST['mem_total']  : 0;
+      $net_rx_bps = isset($_POST['net_rx_bps']) ? (float)$_POST['net_rx_bps'] : 0;
+      $net_tx_bps = isset($_POST['net_tx_bps']) ? (float)$_POST['net_tx_bps'] : 0;
+
+      $db = establishDatabaseConnection();
+
+      if ($_SESSION['db_type'] == "SQLite") {
+        $db->exec('CREATE TABLE IF NOT EXISTS lxd_resource_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          remote_id INTEGER,
+          recorded_at INTEGER,
+          cpu_pct REAL,
+          mem_used REAL,
+          mem_total REAL,
+          net_rx_bps REAL,
+          net_tx_bps REAL
+        )');
+      } else {
+        $db->exec('CREATE TABLE IF NOT EXISTS lxd_resource_history (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          remote_id INT,
+          recorded_at INT,
+          cpu_pct FLOAT,
+          mem_used DOUBLE,
+          mem_total DOUBLE,
+          net_rx_bps DOUBLE,
+          net_tx_bps DOUBLE
+        )');
+      }
+
+      $stmt = $db->prepare('INSERT INTO lxd_resource_history
+        (remote_id, recorded_at, cpu_pct, mem_used, mem_total, net_rx_bps, net_tx_bps)
+        VALUES (?, ?, ?, ?, ?, ?, ?)');
+      $stmt->execute([(int)$remote, time(), $cpu_pct, $mem_used, $mem_total, $net_rx_bps, $net_tx_bps]);
+
+      // Prune rows older than 7 days (~1-in-50 chance per insert to avoid overhead)
+      if (rand(1, 50) === 1) {
+        $cutoff = time() - 604800;
+        $db->prepare('DELETE FROM lxd_resource_history WHERE remote_id = ? AND recorded_at < ?')
+           ->execute([(int)$remote, $cutoff]);
+      }
+
+      $db = null;
+      echo json_encode(['status' => 'ok']);
+      break;
+
+    case "loadHistory":
+      $range = isset($_GET['range']) ? (int)$_GET['range'] : 3600;
+
+      // Bucket size keeps result under ~300 points
+      if      ($range <= 3600)   $bucket = 30;
+      elseif  ($range <= 21600)  $bucket = 120;
+      elseif  ($range <= 86400)  $bucket = 300;
+      else                       $bucket = 1800;
+
+      $since = time() - $range;
+
+      $db = establishDatabaseConnection();
+
+      // Create table if it doesn't exist yet (first time before any saves)
+      if ($_SESSION['db_type'] == "SQLite") {
+        $db->exec('CREATE TABLE IF NOT EXISTS lxd_resource_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          remote_id INTEGER,
+          recorded_at INTEGER,
+          cpu_pct REAL,
+          mem_used REAL,
+          mem_total REAL,
+          net_rx_bps REAL,
+          net_tx_bps REAL
+        )');
+      } else {
+        $db->exec('CREATE TABLE IF NOT EXISTS lxd_resource_history (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          remote_id INT,
+          recorded_at INT,
+          cpu_pct FLOAT,
+          mem_used DOUBLE,
+          mem_total DOUBLE,
+          net_rx_bps DOUBLE,
+          net_tx_bps DOUBLE
+        )');
+      }
+
+      $stmt = $db->prepare('
+        SELECT
+          (recorded_at / :bucket) * :bucket AS ts,
+          ROUND(AVG(cpu_pct),    2) AS cpu_pct,
+          AVG(mem_used)             AS mem_used,
+          AVG(mem_total)            AS mem_total,
+          ROUND(AVG(net_rx_bps), 0) AS net_rx_bps,
+          ROUND(AVG(net_tx_bps), 0) AS net_tx_bps
+        FROM lxd_resource_history
+        WHERE remote_id = :remote AND recorded_at >= :since
+        GROUP BY (recorded_at / :bucket)
+        ORDER BY ts ASC
+      ');
+      $stmt->execute([':bucket' => $bucket, ':remote' => (int)$remote, ':since' => $since]);
+      $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+      $db = null;
+      echo json_encode(['data' => $rows, 'bucket' => $bucket, 'range' => $range]);
+      break;
+
   }
 
 } else {

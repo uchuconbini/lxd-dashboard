@@ -349,6 +349,65 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
                 </div>
               </div><!-- /top usage row -->
 
+              <!-- Resource History Section -->
+              <div class="row">
+                <div class="col-12 mb-4">
+                  <div class="card shadow">
+                    <div class="card-header py-3 d-flex flex-row align-items-center justify-content-between">
+                      <h6 class="m-0 font-weight-bold text-primary">Resource Usage History</h6>
+                      <div class="d-flex align-items-center">
+                        <div class="btn-group btn-group-sm mr-2" role="group">
+                          <button type="button" class="btn btn-primary history-range-btn"   data-range="3600">1h</button>
+                          <button type="button" class="btn btn-outline-primary history-range-btn" data-range="21600">6h</button>
+                          <button type="button" class="btn btn-outline-primary history-range-btn" data-range="86400">24h</button>
+                          <button type="button" class="btn btn-outline-primary history-range-btn" data-range="604800">7d</button>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadHistoryCharts(currentRange)" title="Refresh history">
+                          <i class="fas fa-sync fa-sm"></i>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="card-body">
+
+                      <div id="historyEmptyMsg" class="text-center text-muted py-4" style="display:none;">
+                        No history data yet for this range. Data is recorded every 5 s while this page is open.
+                      </div>
+
+                      <!-- CPU history -->
+                      <div class="mb-1">
+                        <div class="text-xs font-weight-bold text-primary text-uppercase mb-2">CPU Usage %</div>
+                        <div style="position:relative;height:180px;">
+                          <canvas id="histCpuChart"></canvas>
+                        </div>
+                      </div>
+
+                      <hr class="my-3">
+
+                      <!-- Memory + Network side-by-side -->
+                      <div class="row">
+                        <div class="col-lg-6 mb-3">
+                          <div class="text-xs font-weight-bold text-primary text-uppercase mb-2">Memory Usage %</div>
+                          <div style="position:relative;height:160px;">
+                            <canvas id="histMemChart"></canvas>
+                          </div>
+                        </div>
+                        <div class="col-lg-6 mb-3">
+                          <div class="text-xs font-weight-bold text-primary text-uppercase mb-2">
+                            Network I/O &nbsp;
+                            <span style="color:#1cc88a;">&#9644; RX</span> &nbsp;
+                            <span style="color:#e74a3b;">&#9644; TX</span>
+                          </div>
+                          <div style="position:relative;height:160px;">
+                            <canvas id="histNetChart"></canvas>
+                          </div>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                </div>
+              </div><!-- /history row -->
+
             </div>
           </div>
 
@@ -417,6 +476,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
   var netTxHistory = [];
   var netLabels    = [];
 
+  var histCpuChart  = null;
+  var histMemChart  = null;
+  var histNetChart  = null;
+  var currentRange  = 3600;
+  var histTimer     = null;
+
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   function logout() {
@@ -459,6 +524,74 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
   function setStatus(text, cls) {
     $('#statStatus').removeClass('stat-badge-live stat-badge-fetch stat-badge-error').addClass(cls).text(text);
+  }
+
+  // ── History helpers ───────────────────────────────────────────────────────
+
+  function saveHistorySnapshot(cpuPct, memUsed, memTotal, rxBps, txBps) {
+    $.post(
+      "./backend/lxd/monitor.php?remote=" + encodeURI(remoteId) +
+      "&project=" + encodeURI(projectName) + "&action=saveHistory",
+      { cpu_pct: cpuPct, mem_used: memUsed, mem_total: memTotal,
+        net_rx_bps: rxBps, net_tx_bps: txBps }
+    );
+  }
+
+  function loadHistoryCharts(range) {
+    currentRange = range;
+
+    $('.history-range-btn').removeClass('btn-primary').addClass('btn-outline-primary');
+    $('.history-range-btn[data-range="' + range + '"]').removeClass('btn-outline-primary').addClass('btn-primary');
+    $('#historyEmptyMsg').hide();
+
+    $.get(
+      "./backend/lxd/monitor.php?remote=" + encodeURI(remoteId) +
+      "&project=" + encodeURI(projectName) + "&action=loadHistory&range=" + range,
+      function(raw) {
+        var result;
+        try { result = JSON.parse(raw); } catch(e) { return; }
+
+        var rows = result.data || [];
+
+        if (rows.length === 0) {
+          $('#historyEmptyMsg').show();
+          histCpuChart.data.labels = [];  histCpuChart.data.datasets[0].data = [];  histCpuChart.update();
+          histMemChart.data.labels = [];  histMemChart.data.datasets[0].data = [];  histMemChart.update();
+          histNetChart.data.labels = [];  histNetChart.data.datasets[0].data = [];  histNetChart.data.datasets[1].data = [];  histNetChart.update();
+          return;
+        }
+
+        var labels = rows.map(function(r) {
+          var d = new Date(parseInt(r.ts) * 1000);
+          if (range <= 86400)
+            return pad(d.getHours()) + ':' + pad(d.getMinutes());
+          return (d.getMonth()+1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':00';
+        });
+
+        histCpuChart.data.labels           = labels;
+        histCpuChart.data.datasets[0].data = rows.map(function(r) { return parseFloat(r.cpu_pct) || 0; });
+        histCpuChart.update();
+
+        histMemChart.data.labels           = labels;
+        histMemChart.data.datasets[0].data = rows.map(function(r) {
+          return r.mem_total > 0 ? parseFloat((r.mem_used / r.mem_total * 100).toFixed(2)) : 0;
+        });
+        histMemChart.update();
+
+        histNetChart.data.labels           = labels;
+        histNetChart.data.datasets[0].data = rows.map(function(r) { return parseFloat(r.net_rx_bps) || 0; });
+        histNetChart.data.datasets[1].data = rows.map(function(r) { return parseFloat(r.net_tx_bps) || 0; });
+        histNetChart.update();
+      }
+    );
+  }
+
+  function scheduleHistoryRefresh() {
+    clearTimeout(histTimer);
+    histTimer = setTimeout(function() {
+      loadHistoryCharts(currentRange);
+      scheduleHistoryRefresh();
+    }, 60000); // refresh history every 60 s
   }
 
   // ── Chart initialisation ─────────────────────────────────────────────────
@@ -583,6 +716,52 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         },
         animation: { duration: 300 }
       }
+    });
+
+    // ── History charts ────────────────────────────────────────────────────
+    var sharedHistOpts = {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { color: 'rgba(0,0,0,0.04)' }, ticks: { maxTicksLimit: 10, maxRotation: 0 } },
+        y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.04)' } }
+      },
+      plugins: { legend: { display: false } },
+      animation: { duration: 200 },
+      elements: { point: { radius: 0, hoverRadius: 3 } }
+    };
+
+    histCpuChart = new Chart(document.getElementById('histCpuChart').getContext('2d'), {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'CPU %', data: [], borderColor: '#4e73df', backgroundColor: 'rgba(78,115,223,0.07)', borderWidth: 1.5, fill: true, tension: 0.3 }] },
+      options: $.extend(true, {}, sharedHistOpts, {
+        scales: { y: { min: 0, max: 100, ticks: { callback: function(v) { return v + '%'; }, stepSize: 25 } } },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(c) { return ' ' + c.parsed.y.toFixed(2) + '%'; } } } }
+      })
+    });
+
+    histMemChart = new Chart(document.getElementById('histMemChart').getContext('2d'), {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'Mem %', data: [], borderColor: '#1cc88a', backgroundColor: 'rgba(28,200,138,0.07)', borderWidth: 1.5, fill: true, tension: 0.3 }] },
+      options: $.extend(true, {}, sharedHistOpts, {
+        scales: { y: { min: 0, max: 100, ticks: { callback: function(v) { return v + '%'; }, stepSize: 25 } } },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(c) { return ' ' + c.parsed.y.toFixed(2) + '%'; } } } }
+      })
+    });
+
+    histNetChart = new Chart(document.getElementById('histNetChart').getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'RX', data: [], borderColor: '#1cc88a', backgroundColor: 'rgba(28,200,138,0.06)', borderWidth: 1.5, fill: true, tension: 0.3 },
+          { label: 'TX', data: [], borderColor: '#e74a3b', backgroundColor: 'rgba(231,74,59,0.06)',   borderWidth: 1.5, fill: true, tension: 0.3 }
+        ]
+      },
+      options: $.extend(true, {}, sharedHistOpts, {
+        scales: { y: { ticks: { callback: function(v) { return formatBps(v); } } } },
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(c) { return ' ' + c.dataset.label + ': ' + formatBps(c.parsed.y); } } } }
+      })
     });
 
     var memCtx = document.getElementById('memDoughnutChart').getContext('2d');
@@ -758,6 +937,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
             netChart.data.datasets[0].data = netRxHistory;
             netChart.data.datasets[1].data = netTxHistory;
             netChart.update();
+
+            // Persist snapshot to database for long-term history
+            saveHistorySnapshot(hostCpuPct, stats.memUsed, stats.memTotal, rxBps, txBps);
           }
         }
 
@@ -879,9 +1061,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
         $("#projectListNav").load("./backend/lxd/projects.php?remote=" + encodeURI(remoteId) + "&project=" + encodeURI(projectName) + "&action=listProjectsForSelectOption");
         initCharts();
         pollStats();
+        loadHistoryCharts(currentRange);
+        scheduleHistoryRefresh();
       } else {
         alert("Unable to connect to remote host. HTTP status code: " + d.status_code);
       }
+    });
+
+    // Range selector buttons
+    $(document).on('click', '.history-range-btn', function() {
+      loadHistoryCharts(parseInt($(this).data('range')));
     });
 
   });
