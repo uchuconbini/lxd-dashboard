@@ -275,6 +275,41 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
               </div><!-- /charts row -->
 
+              <!-- Network I/O + Disk Usage Row -->
+              <div class="row">
+
+                <!-- Network I/O History -->
+                <div class="col-xl-8 col-lg-7 mb-4">
+                  <div class="card shadow h-100">
+                    <div class="card-header py-3 d-flex flex-row align-items-center justify-content-between">
+                      <h6 class="m-0 font-weight-bold text-primary">Network I/O History</h6>
+                      <span class="text-xs text-gray-500">
+                        <span style="display:inline-block;width:10px;height:3px;background:#1cc88a;border-radius:2px;vertical-align:middle;"></span>&nbsp;RX&nbsp;&nbsp;
+                        <span style="display:inline-block;width:10px;height:3px;background:#e74a3b;border-radius:2px;vertical-align:middle;"></span>&nbsp;TX&nbsp;&bull;&nbsp;5 s interval
+                      </span>
+                    </div>
+                    <div class="card-body">
+                      <div class="chart-area">
+                        <canvas id="netHistoryChart"></canvas>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Disk Usage per Instance -->
+                <div class="col-xl-4 col-lg-5 mb-4">
+                  <div class="card shadow h-100">
+                    <div class="card-header py-3">
+                      <h6 class="m-0 font-weight-bold text-primary">Disk Usage per Instance</h6>
+                    </div>
+                    <div class="card-body" style="overflow-y:auto; max-height:340px;">
+                      <canvas id="diskBarChart"></canvas>
+                    </div>
+                  </div>
+                </div>
+
+              </div><!-- /network + disk row -->
+
               <!-- Top Usage Table -->
               <div class="row">
                 <div class="col-12 mb-4">
@@ -373,8 +408,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
   var sortCol      = 'cpu';
   var sortAsc      = false;
 
-  var cpuChart = null;
-  var memChart = null;
+  var cpuChart  = null;
+  var memChart  = null;
+  var netChart  = null;
+  var diskChart = null;
+
+  var netRxHistory = [];
+  var netTxHistory = [];
+  var netLabels    = [];
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -386,9 +427,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
   function formatBytes(bytes) {
     if (!bytes || bytes <= 0) return '0 B';
-    if (bytes < 1048576)    return (bytes / 1024).toFixed(1)       + ' KiB';
-    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1)    + ' MiB';
-    return                         (bytes / 1073741824).toFixed(2)  + ' GiB';
+    if (bytes < 1048576)    return (bytes / 1024).toFixed(1)      + ' KiB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1)   + ' MiB';
+    return                         (bytes / 1073741824).toFixed(2) + ' GiB';
+  }
+
+  function formatBps(bps) {
+    if (!bps || bps <= 0) return '0 B/s';
+    if (bps < 1024)       return bps.toFixed(0)          + ' B/s';
+    if (bps < 1048576)    return (bps / 1024).toFixed(1) + ' KB/s';
+    if (bps < 1073741824) return (bps / 1048576).toFixed(2) + ' MB/s';
+    return                       (bps / 1073741824).toFixed(2) + ' GB/s';
   }
 
   function pctToDeg(pct) { return pct / 100 * 360; }
@@ -447,6 +496,89 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
           legend: { display: false },
           tooltip: {
             callbacks: { label: function(ctx) { return ' ' + ctx.parsed.y.toFixed(2) + '%'; } }
+          }
+        },
+        animation: { duration: 300 }
+      }
+    });
+
+    // Network I/O line chart
+    var netCtx = document.getElementById('netHistoryChart').getContext('2d');
+    netChart = new Chart(netCtx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'RX',
+            data: [],
+            borderColor: '#1cc88a',
+            backgroundColor: 'rgba(28,200,138,0.06)',
+            borderWidth: 2,
+            pointRadius: 2,
+            pointHoverRadius: 4,
+            fill: true,
+            tension: 0.35
+          },
+          {
+            label: 'TX',
+            data: [],
+            borderColor: '#e74a3b',
+            backgroundColor: 'rgba(231,74,59,0.06)',
+            borderWidth: 2,
+            pointRadius: 2,
+            pointHoverRadius: 4,
+            fill: true,
+            tension: 0.35
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: { callback: function(v) { return formatBps(v); } },
+            grid: { color: 'rgba(0,0,0,0.05)' }
+          },
+          x: { grid: { color: 'rgba(0,0,0,0.05)' } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function(ctx) {
+                return ' ' + ctx.dataset.label + ': ' + formatBps(ctx.parsed.y);
+              }
+            }
+          }
+        },
+        animation: { duration: 300 }
+      }
+    });
+
+    // Disk usage horizontal bar chart
+    var diskCtx = document.getElementById('diskBarChart').getContext('2d');
+    diskChart = new Chart(diskCtx, {
+      type: 'bar',
+      data: { labels: [], datasets: [{ label: 'Disk Used', data: [], backgroundColor: '#36b9cc', borderWidth: 0 }] },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            beginAtZero: true,
+            ticks: { callback: function(v) { return formatBytes(v); } },
+            grid: { color: 'rgba(0,0,0,0.05)' }
+          },
+          y: { grid: { display: false } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: { label: function(ctx) { return ' ' + formatBytes(ctx.parsed.x); } }
           }
         },
         animation: { duration: 300 }
@@ -577,35 +709,67 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
         if (prevSample !== null) {
           var dtNs   = (stats.timestamp - prevSample.timestamp) * 1e6;
+          var dtSec  = (stats.timestamp - prevSample.timestamp) / 1000;
           var nCpus  = Math.max(1, stats.cpuTotal);
 
           if (dtNs > 0) {
-            var totalDelta = 0;
+            var totalCpuDelta = 0;
+            var totalRxDelta  = 0;
+            var totalTxDelta  = 0;
+
             stats.instances.forEach(function(inst) {
               var prev = prevSample.instances.find(function(p) { return p.name === inst.name; });
               if (prev && inst.status === 'Running') {
-                var delta = inst.cpuUsage - prev.cpuUsage;
-                if (delta >= 0) {
-                  var pct = (delta / dtNs / nCpus) * 100;
+                // CPU
+                var cpuDelta = inst.cpuUsage - prev.cpuUsage;
+                if (cpuDelta >= 0) {
+                  var pct = (cpuDelta / dtNs / nCpus) * 100;
                   cpuMap[inst.name] = parseFloat(Math.min(100, Math.max(0, pct)).toFixed(2));
-                  totalDelta += delta;
+                  totalCpuDelta += cpuDelta;
                 }
+                // Network
+                var rxDelta = inst.netRx - prev.netRx;
+                var txDelta = inst.netTx - prev.netTx;
+                if (rxDelta >= 0) totalRxDelta += rxDelta;
+                if (txDelta >= 0) totalTxDelta += txDelta;
               }
             });
 
             hostCpuPct = parseFloat(
-              Math.min(100, Math.max(0, (totalDelta / dtNs / nCpus) * 100)).toFixed(2)
+              Math.min(100, Math.max(0, (totalCpuDelta / dtNs / nCpus) * 100)).toFixed(2)
             );
 
-            // Append to history chart
+            // CPU history
             cpuHistory.push(hostCpuPct);
             cpuLabels.push(timeLabel);
             if (cpuHistory.length > MAX_POINTS) { cpuHistory.shift(); cpuLabels.shift(); }
-            cpuChart.data.labels            = cpuLabels;
-            cpuChart.data.datasets[0].data  = cpuHistory;
+            cpuChart.data.labels           = cpuLabels;
+            cpuChart.data.datasets[0].data = cpuHistory;
             cpuChart.update();
+
+            // Network I/O history (bytes per second)
+            var rxBps = dtSec > 0 ? totalRxDelta / dtSec : 0;
+            var txBps = dtSec > 0 ? totalTxDelta / dtSec : 0;
+            netRxHistory.push(parseFloat(rxBps.toFixed(0)));
+            netTxHistory.push(parseFloat(txBps.toFixed(0)));
+            netLabels.push(timeLabel);
+            if (netRxHistory.length > MAX_POINTS) { netRxHistory.shift(); netTxHistory.shift(); netLabels.shift(); }
+            netChart.data.labels           = netLabels;
+            netChart.data.datasets[0].data = netRxHistory;
+            netChart.data.datasets[1].data = netTxHistory;
+            netChart.update();
           }
         }
+
+        // Disk usage bar chart — snapshot, update every poll
+        var diskInstances = stats.instances.filter(function(i) { return i.diskUsage > 0; });
+        diskInstances.sort(function(a, b) { return b.diskUsage - a.diskUsage; });
+        diskChart.data.labels           = diskInstances.map(function(i) { return i.name; });
+        diskChart.data.datasets[0].data = diskInstances.map(function(i) { return i.diskUsage; });
+        var barHeight  = Math.max(32, diskInstances.length * 36);
+        diskChart.canvas.parentNode.style.height = barHeight + 'px';
+        diskChart.resize();
+        diskChart.update();
 
         // CPU gauge
         $('#cpuGaugeLabel').text(hostCpuPct);
@@ -661,10 +825,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
   function resetAndPoll() {
     clearTimeout(pollTimer);
-    prevSample  = null;
-    cpuHistory  = [];
-    cpuLabels   = [];
-    if (cpuChart) { cpuChart.data.labels = []; cpuChart.data.datasets[0].data = []; cpuChart.update(); }
+    prevSample   = null;
+    cpuHistory   = [];  cpuLabels   = [];
+    netRxHistory = [];  netTxHistory = [];  netLabels = [];
+    if (cpuChart)  { cpuChart.data.labels  = []; cpuChart.data.datasets[0].data = []; cpuChart.update(); }
+    if (netChart)  { netChart.data.labels  = []; netChart.data.datasets[0].data = []; netChart.data.datasets[1].data = []; netChart.update(); }
+    if (diskChart) { diskChart.data.labels = []; diskChart.data.datasets[0].data = []; diskChart.update(); }
     pollStats();
   }
 

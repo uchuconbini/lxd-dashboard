@@ -45,13 +45,35 @@ if (isset($_SESSION['username'])) {
       $instances = isset($data['metadata']) ? $data['metadata'] : [];
 
       foreach ($instances as $inst) {
+        // Aggregate network bytes across all non-loopback interfaces
+        $net_rx = 0;
+        $net_tx = 0;
+        if (isset($inst['state']['network'])) {
+          foreach ($inst['state']['network'] as $iface => $idata) {
+            if ($iface === 'lo') continue;
+            $net_rx += isset($idata['counters']['bytes_received']) ? (float)$idata['counters']['bytes_received'] : 0;
+            $net_tx += isset($idata['counters']['bytes_sent'])     ? (float)$idata['counters']['bytes_sent']     : 0;
+          }
+        }
+
+        // Aggregate disk usage across all devices
+        $disk_usage = 0;
+        if (isset($inst['state']['disk'])) {
+          foreach ($inst['state']['disk'] as $ddata) {
+            $disk_usage += isset($ddata['usage']) ? (float)$ddata['usage'] : 0;
+          }
+        }
+
         $instances_list[] = [
           'name'         => $inst['name'],
           'type'         => isset($inst['type']) ? $inst['type'] : 'container',
           'status'       => isset($inst['state']['status']) ? $inst['state']['status'] : 'Unknown',
-          'cpuUsage'     => isset($inst['state']['cpu']['usage'])            ? (float)$inst['state']['cpu']['usage']            : 0,
-          'memUsage'     => isset($inst['state']['memory']['usage'])         ? (float)$inst['state']['memory']['usage']         : 0,
-          'memUsagePeak' => isset($inst['state']['memory']['usage_peak'])    ? (float)$inst['state']['memory']['usage_peak']    : 0,
+          'cpuUsage'     => isset($inst['state']['cpu']['usage'])         ? (float)$inst['state']['cpu']['usage']         : 0,
+          'memUsage'     => isset($inst['state']['memory']['usage'])      ? (float)$inst['state']['memory']['usage']      : 0,
+          'memUsagePeak' => isset($inst['state']['memory']['usage_peak']) ? (float)$inst['state']['memory']['usage_peak'] : 0,
+          'netRx'        => $net_rx,
+          'netTx'        => $net_tx,
+          'diskUsage'    => $disk_usage,
         ];
       }
 
